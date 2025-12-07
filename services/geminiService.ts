@@ -1,7 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 /**
  * Converts a Blob to a Base64 string.
  */
@@ -19,6 +17,14 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 
 export const analyzeAudio = async (audioBlob: Blob): Promise<{ transcription: string; summary: string }> => {
   try {
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+      throw new Error("API Key is missing. Please add API_KEY to your environment variables.");
+    }
+
+    // Initialize lazily to prevent crash on app load if key is missing
+    const ai = new GoogleGenAI({ apiKey });
+
     const base64Audio = await blobToBase64(audioBlob);
 
     // Using gemini-2.5-flash for efficient audio processing

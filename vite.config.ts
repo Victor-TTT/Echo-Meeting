@@ -5,8 +5,9 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   define: {
-    // Vercel injects env vars at build time. We must explicitly define process.env.API_KEY
-    // to replace it with the string value in the client-side bundle.
-    'process.env.API_KEY': JSON.stringify(process.env.API_KEY)
+    // Vercel injects env vars at build time.
+    'process.env.API_KEY': JSON.stringify(process.env.API_KEY),
+    // Define process to prevent "process is not defined" error in browser
+    'process.env': {} 
   }
 });
