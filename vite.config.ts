@@ -7,5 +7,7 @@ export default defineConfig({
   define: {
     // Safely inject the API Key. If it's missing in Vercel, it defaults to an empty string.
     'process.env.API_KEY': JSON.stringify(process.env.API_KEY || ""),
+    // Polyfill process.env for libraries that might expect it
+    'process.env': JSON.stringify(process.env || {}),
   }
 });

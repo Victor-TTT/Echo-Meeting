@@ -27,26 +27,46 @@
         background: #94a3b8;
       }
     </style>
-    <!-- CRITICAL FIX: Define process to prevent browser crash -->
+    <!-- CRITICAL FIX: Define process to prevent browser crash in some environments -->
     <script>
       window.process = { env: { NODE_ENV: 'production' } };
     </script>
-<script type="importmap">
+  <script type="importmap">
 {
   "imports": {
     "react": "https://aistudiocdn.com/react@^19.2.1",
-    "react/": "https://aistudiocdn.com/react@^19.2.1/",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
-    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1",
+    "react/": "https://aistudiocdn.com/react@^19.2.1/",
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.31.0",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.556.0",
     "vite": "https://aistudiocdn.com/vite@^7.2.6",
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.556.0"
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1"
   }
 }
 </script>
 </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div style="display: flex; justify-content: center; align-items: center; height: 100vh; color: #64748b;">
+        Loading application...
+      </div>
+    </div>
+    <!-- Global Error Handler to debug startup crashes -->
+    <script>
+      window.onerror = function(message, source, lineno, colno, error) {
+        const root = document.getElementById('root');
+        if (root) {
+          root.innerHTML = `
+            <div style="color: red; padding: 20px; font-family: monospace; max-width: 800px; margin: 0 auto;">
+              <h2 style="font-weight: bold; margin-bottom: 10px;">Startup Error</h2>
+              <p>${message}</p>
+              <p style="font-size: 0.9em; color: #666;">${source}:${lineno}</p>
+              <pre style="background: #fee2e2; padding: 10px; border-radius: 4px; overflow: auto; margin-top: 10px;">${error ? error.stack : 'No stack trace'}</pre>
+            </div>
+          `;
+        }
+      };
+    </script>
     <script type="module" src="./index.tsx"></script>
   </body>
 </html>
