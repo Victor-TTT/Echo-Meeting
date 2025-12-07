@@ -18,8 +18,10 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 export const analyzeAudio = async (audioBlob: Blob): Promise<{ transcription: string; summary: string }> => {
   try {
     const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-      throw new Error("API Key is missing. Please add API_KEY to your environment variables.");
+    
+    // Check for empty string or undefined
+    if (!apiKey || apiKey === "") {
+      throw new Error("API Key is missing. Please add API_KEY to your environment variables in Vercel.");
     }
 
     // Initialize lazily to prevent crash on app load if key is missing
