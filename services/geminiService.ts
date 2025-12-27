@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 
 /**
@@ -19,14 +20,11 @@ export const analyzeAudio = async (audioBlob: Blob): Promise<{ transcription: st
   try {
     const apiKey = process.env.API_KEY;
     
-    // Check for empty string or undefined
     if (!apiKey || apiKey === "") {
-      throw new Error("API Key is missing. Please add API_KEY to your environment variables in Vercel.");
+      throw new Error("API Key is missing. Please ensure your API key is configured.");
     }
 
-    // Initialize lazily to prevent crash on app load if key is missing
     const ai = new GoogleGenAI({ apiKey });
-
     const base64Audio = await blobToBase64(audioBlob);
 
     // Using gemini-2.5-flash for efficient audio processing
@@ -64,7 +62,6 @@ export const analyzeAudio = async (audioBlob: Blob): Promise<{ transcription: st
 
     const text = response.text || "";
     
-    // Simple parsing logic (could be more robust with structured JSON output, but text is fine for this)
     const summaryIndex = text.indexOf("## Summary");
     
     let transcription = "";

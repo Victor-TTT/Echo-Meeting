@@ -1,5 +1,17 @@
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Disc, StopCircle, Play, Download, Trash2, BrainCircuit, Monitor, Info, Check, AlertCircle, Headphones, Cast, ExternalLink } from 'lucide-react';
+import { 
+  Disc, 
+  StopCircle, 
+  Download, 
+  Trash2, 
+  BrainCircuit, 
+  Monitor, 
+  Mic, 
+  AlertCircle, 
+  FileAudio,
+  Play
+} from 'lucide-react';
 import AudioVisualizer from './components/AudioVisualizer';
 import { analyzeAudio } from './services/geminiService';
 import { Recording, RecorderState } from './types';
@@ -11,13 +23,16 @@ const App: React.FC = () => {
   const [timer, setTimer] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [processingIds, setProcessingIds] = useState<Set<string>>(new Set());
+  const [includeMic, setIncludeMic] = useState(true);
 
   // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mixedStreamRef = useRef<MediaStream | null>(null);
-  const systemStreamRef = useRef<MediaStream | null>(null);
   const timerIntervalRef = useRef<number | null>(null);
+  
+  // Track streams for cleanup
+  const activeStreams = useRef<MediaStream[]>([]);
 
   // Format timer
   const formatTime = (seconds: number) => {
@@ -26,144 +41,141 @@ const App: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Cleanup function
-  const stopStreams = () => {
-    if (systemStreamRef.current) {
-      systemStreamRef.current.getTracks().forEach(track => track.stop());
-    }
-    if (mixedStreamRef.current) {
-      mixedStreamRef.current.getTracks().forEach(track => track.stop());
-    }
+  const cleanup = () => {
+    activeStreams.current.forEach(stream => {
+      stream.getTracks().forEach(track => track.stop());
+    });
+    activeStreams.current = [];
+    
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
+    }
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
     }
   };
 
   const startRecording = async () => {
     setErrorMsg(null);
     setRecorderState(RecorderState.PREPARING);
+    cleanup();
 
     try {
-      // Browser support check
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-        throw new Error("Your browser does not support screen audio recording. Please use Chrome, Edge, or Firefox.");
-      }
-
-      // Fix: Cast window to any to support webkitAudioContext in TypeScript
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioContextClass();
       const destination = audioCtx.createMediaStreamDestination();
       
-      // Get System Audio (Teams/Others) via Display Media
+      let systemStream: MediaStream | null = null;
+      let micStream: MediaStream | null = null;
+
+      // 1. Capture System Audio (Teams/Zoom)
       try {
-        // Important: 'video: true' is often required to get the 'Share Audio' checkbox in the browser prompt
-        const sysStream = await navigator.mediaDevices.getDisplayMedia({ 
-          video: true, 
+        systemStream = await navigator.mediaDevices.getDisplayMedia({ 
+          video: { width: 1, height: 1 }, 
           audio: {
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
-            // @ts-ignore
-            suppressLocalAudioPlayback: false
           } 
         });
         
-        // We only need the audio track
-        if (sysStream.getAudioTracks().length > 0) {
-          systemStreamRef.current = sysStream;
-          const sysSource = audioCtx.createMediaStreamSource(sysStream);
-          sysSource.connect(destination);
-
-          // If user stops sharing screen via browser UI, stop recording
-          sysStream.getVideoTracks()[0].onended = () => {
-            stopRecording();
-          };
-        } else {
-          // Specific error for desktop app usage
-          const error = "No system audio detected. To record Teams Desktop, you MUST select 'Entire Screen' tab and check 'Share system audio'.";
-          
-          // Clean up if they didn't share audio
-          sysStream.getTracks().forEach(t => t.stop());
-          
-          throw new Error(error);
+        if (systemStream.getAudioTracks().length === 0) {
+          systemStream.getTracks().forEach(t => t.stop());
+          throw new Error("Please check 'Share Audio' in the browser popup to record Teams audio.");
         }
+        
+        const sysSource = audioCtx.createMediaStreamSource(systemStream);
+        sysSource.connect(destination);
+        activeStreams.current.push(systemStream);
+
+        systemStream.getVideoTracks()[0].onended = () => stopRecording();
       } catch (e: any) {
-        console.warn("System audio selection cancelled or failed", e);
-        
-        if (e.name === 'NotAllowedError' || e.name === 'AbortError') {
-           // User cancelled popup
-           setRecorderState(RecorderState.IDLE);
-           return; 
+        if (e.name === 'NotAllowedError') {
+          setRecorderState(RecorderState.IDLE);
+          return;
         }
+        throw e;
+      }
 
-        if (e.message && e.message.includes("permissions policy")) {
-           throw new Error("Browser Permission Blocked: This preview window does not allow screen recording. Please open this app in a new full browser tab/window to use it.");
+      // 2. Capture Microphone (Bluetooth Mic)
+      if (includeMic) {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            } 
+          });
+          const micSource = audioCtx.createMediaStreamSource(micStream);
+          micSource.connect(destination);
+          activeStreams.current.push(micStream);
+        } catch (e) {
+          console.warn("Microphone access denied", e);
         }
-
-        if (e.message && e.message.includes("No system audio")) {
-           throw e;
-        }
-        
-        throw new Error("Could not start System Audio capture: " + e.message);
       }
 
       audioContextRef.current = audioCtx;
       mixedStreamRef.current = destination.stream;
 
-      // Start MediaRecorder
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-        ? 'audio/webm;codecs=opus' 
-        : 'audio/webm';
-        
-      const recorder = new MediaRecorder(destination.stream, { mimeType });
-      const chunks: BlobPart[] = [];
+      // 3. Setup MediaRecorder with MP4 preference
+      const supportedTypes = [
+        'audio/mp4',
+        'video/mp4;codecs=avc1', 
+        'audio/webm;codecs=opus'
+      ];
+      
+      const mimeType = supportedTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'audio/webm';
+      const recorder = new MediaRecorder(destination.stream, { 
+        mimeType,
+        audioBitsPerSecond: 128000
+      });
 
+      const chunks: BlobPart[] = [];
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data);
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: mimeType });
+        const finalType = recorder.mimeType.includes('mp4') ? 'video/mp4' : 'audio/webm';
+        const blob = new Blob(chunks, { type: finalType });
+        const extension = finalType.includes('mp4') ? 'mp4' : 'webm';
         const url = URL.createObjectURL(blob);
+        
         const newRecording: Recording = {
           id: Date.now().toString(),
           blob,
           url,
           timestamp: Date.now(),
           duration: timer,
-          name: `Meeting ${new Date().toLocaleString()}`,
+          name: `Meeting_${new Date().toISOString().slice(0,10)}_${new Date().getHours()}${new Date().getMinutes()}.${extension}`,
         };
         
         setRecordings(prev => [newRecording, ...prev]);
         setRecorderState(RecorderState.IDLE);
         setTimer(0);
-        stopStreams();
+        cleanup();
       };
 
-      recorder.start(1000); // Collect chunks every second
+      recorder.start(1000);
       mediaRecorderRef.current = recorder;
       setRecorderState(RecorderState.RECORDING);
 
-      // Start Timer
       setTimer(0);
       timerIntervalRef.current = window.setInterval(() => {
         setTimer(t => t + 1);
       }, 1000);
 
     } catch (err: any) {
-      console.error(err);
       setErrorMsg(err.message || "Failed to start recording");
       setRecorderState(RecorderState.IDLE);
-      stopStreams();
+      cleanup();
     }
   };
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
-    }
-    if (timerIntervalRef.current) {
-      clearInterval(timerIntervalRef.current);
     }
   }, []);
 
@@ -174,20 +186,12 @@ const App: React.FC = () => {
   const handleAnalyze = async (id: string) => {
     const recording = recordings.find(r => r.id === id);
     if (!recording) return;
-    
     setProcessingIds(prev => new Set(prev).add(id));
-
     try {
       const { transcription, summary } = await analyzeAudio(recording.blob);
-      
-      setRecordings(prev => prev.map(r => {
-        if (r.id === id) {
-          return { ...r, transcription, summary };
-        }
-        return r;
-      }));
+      setRecordings(prev => prev.map(r => r.id === id ? { ...r, transcription, summary } : r));
     } catch (e) {
-      alert("Failed to analyze audio. Please check your API Key.");
+      alert("AI analysis failed. Check your connection or API Key.");
     } finally {
       setProcessingIds(prev => {
         const next = new Set(prev);
@@ -198,191 +202,152 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 flex flex-col items-center">
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col items-center py-10 px-4">
       
       {/* Header */}
-      <header className="w-full max-w-4xl flex justify-between items-center mb-8">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-purple-900/10">
-            <Disc className="text-white w-6 h-6 animate-spin-slow" />
-          </div>
-          <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600">
-            EchoMeeting
-          </h1>
-        </div>
-        <div className="text-sm font-medium px-3 py-1 rounded-full bg-white border border-slate-200 text-slate-500 shadow-sm">
-          {process.env.API_KEY ? (
-            <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> AI Ready</span>
-          ) : (
-             <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-red-500"></div> API Key Missing</span>
-          )}
-        </div>
-      </header>
+      <div className="w-full max-w-2xl flex items-center gap-3 mb-8">
+        <Disc className="text-blue-600 w-8 h-8" />
+        <h1 className="text-2xl font-bold text-slate-800">EchoMeeting Recorder</h1>
+      </div>
 
-      {/* Main Recorder Card */}
-      <main className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 p-6 md:p-8 shadow-xl relative overflow-hidden">
+      {/* Main Container */}
+      <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
         
-        {/* Glow Effects (Subtle for Light Mode) */}
-        <div className="absolute -top-24 -left-24 w-64 h-64 bg-blue-100/50 rounded-full blur-3xl pointer-events-none"></div>
-        <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-purple-100/50 rounded-full blur-3xl pointer-events-none"></div>
-
-        {/* Visualizer */}
-        <div className="mb-8 relative z-10">
+        {/* Visualizer and Time */}
+        <div className="mb-6">
           <div className="flex justify-between items-end mb-2">
-            <span className="text-xs font-semibold tracking-wider text-slate-400 uppercase">Live Frequency</span>
-            <span className={`text-xl font-mono font-bold ${recorderState === RecorderState.RECORDING ? 'text-red-500' : 'text-slate-400'}`}>
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+              {recorderState === RecorderState.RECORDING ? 'Recording...' : 'Idle'}
+            </span>
+            <span className={`text-2xl font-mono font-bold ${recorderState === RecorderState.RECORDING ? 'text-red-500' : 'text-slate-300'}`}>
               {formatTime(timer)}
             </span>
           </div>
           <AudioVisualizer stream={mixedStreamRef.current} isRecording={recorderState === RecorderState.RECORDING} />
         </div>
 
-        {/* Controls */}
-        <div className="flex flex-col items-center gap-6 relative z-10">
+        {/* Unified Controls */}
+        <div className="flex flex-col gap-6">
           
-          {/* Error Message */}
           {errorMsg && (
-            <div className="flex flex-col gap-2 text-red-600 bg-red-50 px-4 py-3 rounded-lg text-sm border border-red-200 max-w-lg text-left animate-in fade-in slide-in-from-top-1 w-full">
-              <div className="flex items-start gap-2">
-                 <AlertCircle size={16} className="shrink-0 mt-0.5" />
-                 <div>{errorMsg}</div>
-              </div>
-              {errorMsg.includes("Browser Permission Blocked") && (
-                <button 
-                  onClick={() => window.open(window.location.href, '_blank')}
-                  className="ml-6 flex items-center gap-2 text-xs bg-white border border-red-200 hover:bg-red-50 px-3 py-1.5 rounded transition-colors w-fit shadow-sm"
-                >
-                  <ExternalLink size={12} /> Open in New Window
-                </button>
-              )}
+            <div className="bg-red-50 text-red-700 p-4 rounded-xl text-sm border border-red-100 flex gap-2">
+              <AlertCircle size={18} className="shrink-0" />
+              {errorMsg}
             </div>
           )}
 
-          {/* Main Action Button */}
-          {recorderState === RecorderState.IDLE || recorderState === RecorderState.PREPARING ? (
-            <button 
-              onClick={startRecording}
-              disabled={recorderState === RecorderState.PREPARING}
-              className="group relative flex items-center justify-center w-20 h-20 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-700 shadow-lg shadow-slate-300/50 transition-all hover:scale-105 active:scale-95 disabled:opacity-70 disabled:scale-100"
-            >
-              {recorderState === RecorderState.PREPARING && (
-                <div className="absolute inset-0 rounded-full border-4 border-slate-400/30 border-t-slate-600 animate-spin"></div>
-              )}
-              {recorderState !== RecorderState.PREPARING && (
-                 <div className="absolute inset-0 rounded-full border-2 border-slate-400/20 animate-ping opacity-20 group-hover:opacity-40"></div>
-              )}
-              <Monitor size={32} fill="currentColor" className={recorderState === RecorderState.PREPARING ? 'opacity-0' : 'opacity-100'} />
-            </button>
-          ) : (
-            <button 
-              onClick={stopRecording}
-              className="flex items-center justify-center w-20 h-20 rounded-full bg-slate-800 hover:bg-slate-900 text-white shadow-lg transition-all hover:scale-105 active:scale-95"
-            >
-              <StopCircle size={32} />
-            </button>
-          )}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-100">
+            {/* Simple Option */}
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <input 
+                type="checkbox" 
+                checked={includeMic} 
+                onChange={(e) => setIncludeMic(e.target.checked)}
+                disabled={recorderState !== RecorderState.IDLE}
+                className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 transition-all cursor-pointer disabled:opacity-50"
+              />
+              <div className="flex flex-col">
+                <span className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                  <Mic size={14} /> Record my microphone
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium">Capture your voice (Bluetooth friendly)</span>
+              </div>
+            </label>
 
-          <div className="text-sm text-slate-500 font-medium tracking-wide uppercase">
-            {recorderState === RecorderState.IDLE ? "Start Recording" : 
-             recorderState === RecorderState.PREPARING ? "Select Screen & Share Audio..." : 
-             "Recording in Progress"}
+            {/* Simple Primary Button */}
+            {recorderState !== RecorderState.RECORDING ? (
+              <button 
+                onClick={startRecording}
+                disabled={recorderState === RecorderState.PREPARING}
+                className="w-full sm:w-auto px-10 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {recorderState === RecorderState.PREPARING ? (
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                ) : (
+                  <Play size={18} fill="currentColor" />
+                )}
+                Start Recording
+              </button>
+            ) : (
+              <button 
+                onClick={stopRecording}
+                className="w-full sm:w-auto px-10 py-3 bg-red-500 hover:bg-red-600 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2"
+              >
+                <StopCircle size={18} fill="currentColor" />
+                Stop Recording
+              </button>
+            )}
           </div>
-
         </div>
-      </main>
+      </div>
 
-      {/* Recordings List */}
-      <section className="w-full max-w-2xl mt-8">
-        <h2 className="text-lg font-semibold text-slate-700 mb-4 flex items-center gap-2">
-          <Disc size={18} /> Recent Recordings
+      {/* History List */}
+      <div className="w-full max-w-2xl mt-12">
+        <h2 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
+          <FileAudio size={20} className="text-slate-400" />
+          Recording History
         </h2>
         
         <div className="space-y-4">
           {recordings.length === 0 && (
-            <div className="text-center py-12 border border-dashed border-slate-300 bg-white/50 rounded-xl text-slate-400">
-              No recordings yet.
+            <div className="text-center py-12 bg-slate-100/50 border-2 border-dashed border-slate-200 rounded-2xl text-slate-400 text-sm">
+              No recordings yet. Click "Start Recording" to begin your meeting.
             </div>
           )}
 
           {recordings.map((rec) => (
-            <div key={rec.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm transition-all hover:shadow-md">
-              <div className="p-4 flex flex-col sm:flex-row gap-4 sm:items-center justify-between">
-                <div>
-                  <h3 className="font-medium text-slate-800">{rec.name}</h3>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {new Date(rec.timestamp).toLocaleDateString()} • {formatTime(rec.duration)} • {(rec.blob.size / 1024 / 1024).toFixed(2)} MB
+            <div key={rec.id} className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+              <div className="p-4 flex items-center gap-4">
+                <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center text-blue-600">
+                  <FileAudio size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-bold text-slate-800 text-sm truncate">{rec.name}</h3>
+                  <p className="text-[10px] font-bold text-slate-400 mt-0.5">
+                    {formatTime(rec.duration)} • {(rec.blob.size / 1024 / 1024).toFixed(1)} MB
                   </p>
                 </div>
-                
-                <div className="flex items-center gap-2">
-                  <audio src={rec.url} controls className="h-8 w-32 md:w-48 opacity-70 hover:opacity-100 transition-opacity" />
-                  
-                  <a href={rec.url} download={`${rec.name}.webm`} className="p-2 text-slate-400 hover:text-blue-600 transition-colors" title="Download">
-                    <Download size={20} />
+                <div className="flex items-center gap-1">
+                  <audio src={rec.url} controls className="h-8 w-32 hidden sm:block" />
+                  <a href={rec.url} download={rec.name} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Download">
+                    <Download size={18} />
                   </a>
-                  
-                  <button 
-                    onClick={() => handleDelete(rec.id)}
-                    className="p-2 text-slate-400 hover:text-red-600 transition-colors" 
-                    title="Delete"
-                  >
-                    <Trash2 size={20} />
+                  <button onClick={() => handleDelete(rec.id)} className="p-2 hover:bg-red-50 rounded-lg text-slate-500 hover:text-red-500" title="Delete">
+                    <Trash2 size={18} />
                   </button>
                 </div>
               </div>
 
-              {/* AI Analysis Section */}
-              <div className="bg-slate-50 border-t border-slate-100 p-4">
-                {!rec.transcription && !rec.summary ? (
+              {/* AI Transcription Section */}
+              <div className="px-4 pb-4">
+                {!rec.transcription ? (
                   <button 
                     onClick={() => handleAnalyze(rec.id)}
                     disabled={processingIds.has(rec.id)}
-                    className="flex items-center gap-2 text-xs font-semibold text-purple-600 hover:text-purple-500 transition-colors disabled:opacity-50"
+                    className="w-full py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-bold text-slate-600 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
                   >
-                    {processingIds.has(rec.id) ? (
-                       <>
-                         <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
-                         Generating Meeting Minutes...
-                       </>
-                    ) : (
-                       <>
-                         <BrainCircuit size={16} />
-                         Generate AI Summary & Transcript
-                       </>
-                    )}
+                    {processingIds.has(rec.id) ? "AI Processing..." : <><BrainCircuit size={14} /> Generate AI Summary</>}
                   </button>
                 ) : (
-                  <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-500">
-                     {rec.summary && (
-                        <div>
-                          <h4 className="text-xs font-bold text-purple-600 uppercase tracking-wider mb-2 flex items-center gap-2">
-                            <BrainCircuit size={14} /> AI Summary
-                          </h4>
-                          <div className="text-sm text-slate-700 bg-white p-3 rounded-lg border border-purple-200 whitespace-pre-wrap shadow-sm">
-                            {rec.summary}
-                          </div>
-                        </div>
-                     )}
-                     {rec.transcription && (
-                        <details className="group">
-                          <summary className="cursor-pointer text-xs font-bold text-slate-500 hover:text-slate-700 transition-colors flex items-center gap-2 uppercase tracking-wider">
-                            <span className="group-open:rotate-90 transition-transform">▶</span> Full Transcript
-                          </summary>
-                          <div className="mt-3 text-sm text-slate-600 pl-4 border-l-2 border-slate-200 whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto custom-scrollbar">
-                            {rec.transcription}
-                          </div>
-                        </details>
-                     )}
+                  <div className="mt-2 space-y-3 p-3 bg-slate-50 rounded-lg border border-slate-100">
+                    <div>
+                      <h4 className="text-[10px] font-black text-blue-600 uppercase mb-1">AI Summary</h4>
+                      <p className="text-xs text-slate-700 leading-relaxed">{rec.summary}</p>
+                    </div>
+                    <details>
+                      <summary className="text-[10px] font-bold text-slate-400 cursor-pointer hover:text-slate-600">View Transcript</summary>
+                      <p className="text-[11px] text-slate-500 mt-2 whitespace-pre-wrap leading-normal max-h-40 overflow-y-auto">{rec.transcription}</p>
+                    </details>
                   </div>
                 )}
               </div>
             </div>
           ))}
         </div>
-      </section>
-      
-      <footer className="mt-12 text-center text-slate-400 text-xs">
-        <p>EchoMeeting stores recordings locally in your browser memory. Reloading the page will clear them.</p>
+      </div>
+
+      <footer className="mt-auto pt-10 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">
+        Ensure 'Share Audio' is checked when sharing your screen | Default export: MP4
       </footer>
     </div>
   );

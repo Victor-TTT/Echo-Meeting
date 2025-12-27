@@ -2,6 +2,7 @@
   "name": "EchoMeeting AI Recorder",
   "description": "A professional audio recorder designed for online meetings (Teams, Zoom) with system audio capture and AI-powered transcription.",
   "requestFramePermissions": [
-    "display-capture"
+    "display-capture",
+    "microphone"
   ]
 }
