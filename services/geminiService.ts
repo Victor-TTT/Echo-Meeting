@@ -18,7 +18,7 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 
 export const analyzeAudio = async (audioBlob: Blob): Promise<{ transcription: string; summary: string }> => {
   try {
-    const apiKey = process.env.API_KEY;
+    const apiKey = "AIzaSyBndPZAO4CKTofI2CauB9MiISeK2Mk4G7E"; /**process.env.API_KEY;
     
     if (!apiKey || apiKey === "") {
       throw new Error("API Key is missing. Please ensure your API key is configured.");
